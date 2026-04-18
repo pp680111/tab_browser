@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-electron
+coverage
+.vite
+test-results
+public/font
+public/soundfont
+.DS_Store
+*.log
+*.tmp
+dev.log

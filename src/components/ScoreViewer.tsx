@@ -1,0 +1,452 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as alphaTab from '@coderline/alphatab';
+import type { Annotation, MeasurePosition } from '../types';
+import { PlayerControls } from './PlayerControls';
+import { MeasureOverlay } from './MeasureOverlay';
+
+type Props = {
+  fileBytes: Uint8Array | null;
+  fileName: string | null;
+  annotations: Annotation[];
+  activeMeasureIndex: number | null;
+  onScoreLoaded: (payload: { title?: string; artist?: string; measureCount: number }) => void;
+  onMeasureClick?: (measureIndex: number) => void;
+  onPlayerMeasureChange?: (measureIndex: number) => void;
+  onRenderReady?: () => void;
+  onError?: (message: string) => void;
+};
+
+function extractMeasureCount(score: any): number {
+  if (!score) return 0;
+  if (typeof score.measureCount === 'number') return score.measureCount;
+  const firstTrackBars = score?.tracks?.[0]?.staves?.[0]?.bars?.length;
+  if (typeof firstTrackBars === 'number') return firstTrackBars;
+  if (Array.isArray(score.masterBars)) return score.masterBars.length;
+  if (Array.isArray(score.measures)) return score.measures.length;
+  return 0;
+}
+
+function extractTitle(score: any): { title?: string; artist?: string } {
+  const title = score?.title ?? score?.song?.title ?? score?.name;
+  const artist = score?.artist ?? score?.song?.artist?.name ?? score?.track?.artist;
+  return { title, artist };
+}
+
+function getBoundsBox(bounds: any): MeasurePosition | null {
+  const source = bounds?.visualBounds ?? bounds?.realBounds ?? bounds;
+  if (!source) return null;
+
+  const x = Number(source.x ?? source.left ?? 0);
+  const y = Number(source.y ?? source.top ?? 0);
+  const width = Number(source.w ?? source.width ?? 0);
+  const height = Number(source.h ?? source.height ?? 0);
+
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    return null;
+  }
+
+  return {
+    measureIndex: 0,
+    x,
+    y,
+    width,
+    height,
+  };
+}
+
+function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosition[] {
+  const surface = container.querySelector('.at-surface') as HTMLElement | null;
+  if (!surface) return [];
+
+  const containerRect = container.getBoundingClientRect();
+  const scrollLeft = container.scrollLeft;
+  const scrollTop = container.scrollTop;
+  const positions: MeasurePosition[] = [];
+
+  for (const child of Array.from(surface.children) as HTMLElement[]) {
+    const childRect = child.getBoundingClientRect();
+    const barRects = Array.from(child.querySelectorAll('rect'))
+      .map((rect) => ({
+        x: Number(rect.getAttribute('x') ?? Number.NaN),
+        y: Number(rect.getAttribute('y') ?? Number.NaN),
+        width: Number(rect.getAttribute('width') ?? Number.NaN),
+        height: Number(rect.getAttribute('height') ?? Number.NaN),
+        fill: rect.getAttribute('fill') ?? '',
+      }))
+      .filter(
+        (rect) =>
+          rect.fill === '#222211' &&
+          Number.isFinite(rect.x) &&
+          Number.isFinite(rect.y) &&
+          Number.isFinite(rect.width) &&
+          Number.isFinite(rect.height) &&
+          rect.width <= 5
+      );
+
+    if (!barRects.length) continue;
+
+    const rows = new Map<number, typeof barRects>();
+    for (const rect of barRects) {
+      const key = Math.round(rect.y * 2) / 2;
+      const next = rows.get(key) ?? [];
+      next.push(rect);
+      rows.set(key, next);
+    }
+
+    const sortedRows = Array.from(rows.values())
+      .map((row) => {
+        const sorted = row.slice().sort((a, b) => a.x - b.x);
+        const minY = Math.min(...sorted.map((rect) => rect.y));
+        const maxY = Math.max(...sorted.map((rect) => rect.y + rect.height));
+        return { sorted, minY, maxY };
+      })
+      .sort((a, b) => a.minY - b.minY || a.sorted[0].x - b.sorted[0].x);
+
+    for (const row of sortedRows) {
+      for (let index = 0; index < row.sorted.length - 1; index += 1) {
+        const left = row.sorted[index];
+        const right = row.sorted[index + 1];
+        const width = right.x - left.x;
+        if (!Number.isFinite(width) || width <= 4) continue;
+
+        positions.push({
+          measureIndex: positions.length + 1,
+          x: Math.max(0, childRect.left - containerRect.left + scrollLeft + left.x),
+          y: Math.max(0, childRect.top - containerRect.top + scrollTop + row.minY),
+          width,
+          height: Math.max(24, row.maxY - row.minY),
+        });
+      }
+    }
+  }
+
+  return positions;
+}
+
+function formatTime(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '00:00';
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+export function ScoreViewer({
+  fileBytes,
+  fileName,
+  annotations,
+  activeMeasureIndex,
+  onScoreLoaded,
+  onMeasureClick,
+  onPlayerMeasureChange,
+  onRenderReady,
+  onError,
+}: Props) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const apiRef = useRef<any>(null);
+  const scoreRef = useRef<any>(null);
+  const onScoreLoadedRef = useRef(onScoreLoaded);
+  const onMeasureClickRef = useRef(onMeasureClick);
+  const onRenderReadyRef = useRef(onRenderReady);
+  const onErrorRef = useRef(onError);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
+  const [apiReady, setApiReady] = useState(false);
+  const [measurePositions, setMeasurePositions] = useState<MeasurePosition[]>([]);
+  const [playing, setPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [positionLabel, setPositionLabel] = useState('Stopped');
+  const [playerReady, setPlayerReady] = useState(false);
+  const [loopRange, setLoopRange] = useState<{ startMeasure: number | null; endMeasure: number | null }>({
+    startMeasure: null,
+    endMeasure: null,
+  });
+  const [loopLabel, setLoopLabel] = useState('Loop: off');
+
+  const label = useMemo(() => fileName ?? 'No file selected', [fileName]);
+
+  useEffect(() => {
+    onScoreLoadedRef.current = onScoreLoaded;
+  }, [onScoreLoaded]);
+
+  useEffect(() => {
+    onMeasureClickRef.current = onMeasureClick;
+  }, [onMeasureClick]);
+
+  useEffect(() => {
+    onRenderReadyRef.current = onRenderReady;
+  }, [onRenderReady]);
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+
+    const api = new alphaTab.AlphaTabApi(hostRef.current, {
+      core: {
+        fontDirectory: '/assets/font/',
+      },
+      player: {
+        enablePlayer: false,
+      },
+      display: {
+        scale: 1.0,
+      },
+    });
+    apiRef.current = api;
+    setApiReady(true);
+
+    const handleScoreLoaded = (score: any) => {
+      scoreRef.current = score;
+      const meta = extractTitle(score);
+      onScoreLoadedRef.current({
+        ...meta,
+        measureCount: extractMeasureCount(score),
+      });
+    };
+
+    const handleRenderFinished = () => {
+      setStatus('ready');
+      const syncMeasurePositions = (attempt = 0) => {
+        const api = apiRef.current;
+        const score = api?.score;
+        scoreRef.current = score;
+        const masterBars = score?.masterBars ?? score?.bars ?? [];
+        const lookup = api?.boundsLookup;
+        let positions = masterBars
+          .map((_: any, index: number) => {
+            const bounds = lookup?.findMasterBarByIndex?.(index) ?? lookup?.getMasterBarBounds?.(index);
+            const box = getBoundsBox(bounds);
+            if (!box) return null;
+            return { ...box, measureIndex: index + 1 };
+          })
+          .filter(Boolean) as MeasurePosition[];
+
+        if (positions.length === 0 && viewportRef.current) {
+          positions = extractMeasurePositionsFromDom(viewportRef.current);
+        }
+        if (positions.length > 0 || attempt >= 10) {
+          setMeasurePositions(positions);
+          onRenderReadyRef.current?.();
+          return;
+        }
+
+        window.setTimeout(() => syncMeasurePositions(attempt + 1), 100);
+      };
+
+      window.setTimeout(() => syncMeasurePositions(), 0);
+    };
+
+    const handlePlayerReady = () => {
+      setPlayerReady(true);
+      setPositionLabel('00:00 / 00:00');
+    };
+
+    const handlePlayerStateChanged = (state: any) => {
+      const isPlaying = Boolean(state?.state === alphaTab.synth.PlayerState.Playing);
+      setPlaying(isPlaying);
+      if (typeof state?.playbackSpeed === 'number') {
+        setPlaybackSpeed(state.playbackSpeed);
+      }
+    };
+
+    const handlePlayerPositionChanged = (position: any) => {
+      const current = formatTime(Number(position?.currentTime ?? 0));
+      const end = formatTime(Number(position?.endTime ?? 0));
+      setPositionLabel(`${current} / ${end}`);
+
+      const playedMeasureIndex =
+        typeof position?.bar?.index === 'number'
+          ? position.bar.index + 1
+          : typeof position?.beat?.bar?.index === 'number'
+            ? position.beat.bar.index + 1
+            : null;
+      if (playedMeasureIndex) {
+        onPlayerMeasureChange?.(playedMeasureIndex);
+      }
+    };
+
+    const handlePlayedBeatChanged = (beat: any) => {
+      const measureIndex = typeof beat?.bar?.index === 'number' ? beat.bar.index + 1 : null;
+      if (measureIndex) {
+        onPlayerMeasureChange?.(measureIndex);
+      }
+    };
+
+    const handleError = (error: Error) => {
+      setStatus('idle');
+      onErrorRef.current?.(error.message);
+    };
+
+    const handleBeatMouseDown = (beat: any) => {
+      const measureIndex = typeof beat?.bar?.index === 'number' ? beat.bar.index + 1 : null;
+      if (measureIndex && onMeasureClickRef.current) {
+        onMeasureClickRef.current(measureIndex);
+      }
+    };
+
+    api.scoreLoaded.on(handleScoreLoaded);
+    api.renderFinished.on(handleRenderFinished);
+    api.playerReady?.on?.(handlePlayerReady);
+    api.playerStateChanged?.on?.(handlePlayerStateChanged);
+    api.playerPositionChanged?.on?.(handlePlayerPositionChanged);
+    api.playedBeatChanged?.on?.(handlePlayedBeatChanged);
+    api.error.on(handleError);
+    api.beatMouseUp?.on?.(handleBeatMouseDown);
+
+    return () => {
+      api.scoreLoaded.off(handleScoreLoaded);
+      api.renderFinished.off(handleRenderFinished);
+      api.playerReady?.off?.(handlePlayerReady);
+      api.playerStateChanged?.off?.(handlePlayerStateChanged);
+      api.playerPositionChanged?.off?.(handlePlayerPositionChanged);
+      api.playedBeatChanged?.off?.(handlePlayedBeatChanged);
+      api.error.off(handleError);
+      api.beatMouseUp?.off?.(handleBeatMouseDown);
+      api.destroy?.();
+      apiRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!apiReady || !apiRef.current || !fileBytes) return;
+    setStatus('loading');
+    const loaded = apiRef.current.load(fileBytes);
+    if (!loaded) {
+      setStatus('idle');
+      onErrorRef.current?.('AlphaTab could not load the current file.');
+    }
+  }, [apiReady, fileBytes]);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    const score = scoreRef.current;
+    if (!api || !score || !loopRange.startMeasure || !loopRange.endMeasure) {
+      setLoopLabel('Loop: off');
+      return;
+    }
+
+    const bars = score?.tracks?.[0]?.staves?.[0]?.bars ?? score?.masterBars ?? [];
+    const startBar = bars[loopRange.startMeasure - 1];
+    const endBar = bars[loopRange.endMeasure - 1];
+    const firstBeat = startBar?.voices?.[0]?.beats?.[0];
+    const lastBeat = endBar?.voices?.[0]?.beats?.at?.(-1) ?? endBar?.voices?.[0]?.beats?.[endBar?.voices?.[0]?.beats?.length - 1];
+    const startTick = api.tickCache?.getBeatStart?.(firstBeat);
+    const endTick = api.tickCache?.getBeatStart?.(lastBeat);
+
+    if (typeof startTick === 'number' && typeof endTick === 'number') {
+      api.playbackRange = {
+        startTick,
+        endTick,
+      };
+      setLoopLabel(`Loop: M${loopRange.startMeasure} - M${loopRange.endMeasure}`);
+    }
+  }, [loopRange]);
+
+  useEffect(() => {
+    if (!activeMeasureIndex) return;
+    const position = measurePositions.find((item) => item.measureIndex === activeMeasureIndex);
+    const container = viewportRef.current;
+    if (!position || !container) return;
+
+    const top = Math.max(0, position.y - 120);
+    container.scrollTo({
+      top,
+      behavior: 'smooth',
+    });
+  }, [activeMeasureIndex, measurePositions]);
+
+  const handlePlayPause = () => {
+    const api = apiRef.current;
+    if (!api) return;
+    api.playPause?.();
+  };
+
+  const handleStop = () => {
+    apiRef.current?.stop?.();
+    setPlaying(false);
+    setPositionLabel('Stopped');
+  };
+
+  const handleSpeedChange = (speed: number) => {
+    const api = apiRef.current;
+    if (!api) return;
+    setPlaybackSpeed(speed);
+    if (api.player) {
+      api.player.playbackSpeed = speed;
+    } else {
+      api.playbackSpeed = speed;
+    }
+  };
+
+  const handleSetLoopStart = () => {
+    if (!activeMeasureIndex) return;
+    setLoopRange((current) => {
+      const next = { ...current, startMeasure: activeMeasureIndex };
+      if (next.endMeasure && next.endMeasure < next.startMeasure) {
+        next.endMeasure = next.startMeasure;
+      }
+      return next;
+    });
+  };
+
+  const handleSetLoopEnd = () => {
+    if (!activeMeasureIndex) return;
+    setLoopRange((current) => {
+      const next = { ...current, endMeasure: activeMeasureIndex };
+      if (next.startMeasure && next.endMeasure && next.endMeasure < next.startMeasure) {
+        next.startMeasure = next.endMeasure;
+      }
+      return next;
+    });
+  };
+
+  const handleClearLoop = () => {
+    setLoopRange({ startMeasure: null, endMeasure: null });
+    const api = apiRef.current;
+    if (api) {
+      api.playbackRange = null;
+    }
+    setLoopLabel('Loop: off');
+  };
+
+  return (
+    <section className="viewer-shell">
+      <div className="viewer-header">
+        <div>
+          <p className="eyebrow">Score preview</p>
+          <h2>{label}</h2>
+        </div>
+        <div className={`status-pill status-${status}`}>
+          {status === 'loading' ? 'Loading' : status === 'ready' ? 'Ready' : 'Waiting'}
+        </div>
+      </div>
+      <div className="viewer-toolbar">
+        <PlayerControls
+          ready={status === 'ready' && playerReady}
+          playing={playing}
+          playbackSpeed={playbackSpeed}
+          positionLabel={positionLabel}
+          loopLabel={loopLabel}
+          onPlayPause={handlePlayPause}
+          onStop={handleStop}
+          onSpeedChange={handleSpeedChange}
+          onSetLoopStart={handleSetLoopStart}
+          onSetLoopEnd={handleSetLoopEnd}
+          onClearLoop={handleClearLoop}
+        />
+      </div>
+      <div ref={viewportRef} className="score-canvas" aria-label="score render area">
+        <div ref={hostRef} id="alphaTab" className="score-canvas__host" />
+        <MeasureOverlay
+          annotations={annotations}
+          measurePositions={measurePositions}
+          activeMeasureIndex={activeMeasureIndex}
+          onMeasureClick={(measureIndex) => onMeasureClickRef.current?.(measureIndex)}
+        />
+      </div>
+    </section>
+  );
+}
