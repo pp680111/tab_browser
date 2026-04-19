@@ -199,7 +199,8 @@ export function ScoreViewer({
         fontDirectory: '/assets/font/',
       },
       player: {
-        enablePlayer: false,
+        enablePlayer: true,
+        soundFont: '/assets/soundfont/sonivox.sf2',
       },
       display: {
         scale: 1.0,
