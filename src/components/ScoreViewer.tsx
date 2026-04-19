@@ -104,7 +104,7 @@ function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosit
           Number.isFinite(rect.bounds.top) &&
           Number.isFinite(rect.bounds.width) &&
           Number.isFinite(rect.bounds.height) &&
-          rect.bounds.width <= 6 &&
+          rect.bounds.width <= 3 &&
           rect.bounds.height > 0
       );
 
