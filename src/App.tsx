@@ -439,7 +439,6 @@ export default function App() {
             <ScoreViewer
               fileBytes={fileBytes}
               fileName={fileLabel}
-              annotations={sortedAnnotations}
               activeMeasureIndex={selectedMeasureIndex}
               onMeasureClick={(measureIndex) => {
                 setSelectedMeasureIndex(measureIndex);
@@ -479,7 +478,10 @@ export default function App() {
               annotations={sortedAnnotations}
               measureCount={Math.max(measureCount, 1)}
               selectedMeasureIndex={selectedMeasureIndex}
-              onSelectMeasure={(measureIndex) => setSelectedMeasureIndex(Math.max(1, measureIndex))}
+              activeMeasureIndex={selectedMeasureIndex}
+              onSelectMeasure={(measureIndex) =>
+                setSelectedMeasureIndex(Number.isFinite(measureIndex) ? Math.max(1, measureIndex) : 1)
+              }
               onCreate={handleCreateAnnotation}
               onUpdate={handleUpdateAnnotation}
               onDelete={handleDeleteAnnotation}

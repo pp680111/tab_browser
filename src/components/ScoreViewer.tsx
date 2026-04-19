@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
-import type { Annotation, MeasurePosition } from '../types';
+import type { MeasurePosition } from '../types';
 import { PlayerControls } from './PlayerControls';
 import { MeasureOverlay } from './MeasureOverlay';
 
 type Props = {
   fileBytes: Uint8Array | null;
   fileName: string | null;
-  annotations: Annotation[];
   activeMeasureIndex: number | null;
   onScoreLoaded: (payload: { title?: string; artist?: string; measureCount: number }) => void;
   onMeasureClick?: (measureIndex: number) => void;
@@ -54,6 +53,35 @@ function getBoundsBox(bounds: any): MeasurePosition | null {
   };
 }
 
+function clusterBarRectsByX(
+  rects: Array<{ bounds: DOMRect; fill: string }>
+): Array<{ rects: Array<{ bounds: DOMRect; fill: string }>; left: number }> {
+  const clusters: Array<{ rects: Array<{ bounds: DOMRect; fill: string }>; left: number; right: number }> = [];
+
+  for (const rect of rects.slice().sort((a, b) => a.bounds.left - b.bounds.left || a.bounds.top - b.bounds.top)) {
+    const cluster = clusters.at(-1);
+    if (!cluster || rect.bounds.left - cluster.right > 4) {
+      clusters.push({
+        rects: [rect],
+        left: rect.bounds.left,
+        right: rect.bounds.right,
+      });
+      continue;
+    }
+
+    cluster.rects.push(rect);
+    cluster.left = Math.min(cluster.left, rect.bounds.left);
+    cluster.right = Math.max(cluster.right, rect.bounds.right);
+  }
+
+  return clusters
+    .filter((cluster) => cluster.rects.length > 1)
+    .map((cluster) => ({
+      rects: cluster.rects,
+      left: cluster.left,
+    }));
+}
+
 function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosition[] {
   const surface = container.querySelector('.at-surface') as HTMLElement | null;
   if (!surface) return [];
@@ -81,39 +109,25 @@ function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosit
       );
 
     if (!barRects.length) continue;
+    const clusters = clusterBarRectsByX(barRects);
+    if (clusters.length < 2) continue;
 
-    const rows = new Map<number, typeof barRects>();
-    for (const rect of barRects) {
-      const key = Math.round(rect.bounds.top * 2) / 2;
-      const next = rows.get(key) ?? [];
-      next.push(rect);
-      rows.set(key, next);
-    }
+    const systemMinY = Math.min(...barRects.map((rect) => rect.bounds.top));
+    const systemMaxY = Math.max(...barRects.map((rect) => rect.bounds.bottom));
 
-    const sortedRows = Array.from(rows.values())
-      .map((row) => {
-        const sorted = row.slice().sort((a, b) => a.bounds.left - b.bounds.left);
-        const minY = Math.min(...sorted.map((rect) => rect.bounds.top));
-        const maxY = Math.max(...sorted.map((rect) => rect.bounds.bottom));
-        return { sorted, minY, maxY };
-      })
-      .sort((a, b) => a.minY - b.minY || a.sorted[0].bounds.left - b.sorted[0].bounds.left);
+    for (let index = 0; index < clusters.length - 1; index += 1) {
+      const left = clusters[index];
+      const right = clusters[index + 1];
+      const width = right.left - left.left;
+      if (!Number.isFinite(width) || width <= 4) continue;
 
-    for (const row of sortedRows) {
-      for (let index = 0; index < row.sorted.length - 1; index += 1) {
-        const left = row.sorted[index];
-        const right = row.sorted[index + 1];
-        const width = right.bounds.left - left.bounds.left;
-        if (!Number.isFinite(width) || width <= 4) continue;
-
-        positions.push({
-          measureIndex: positions.length + 1,
-          x: Math.max(0, left.bounds.left - containerRect.left + scrollLeft),
-          y: Math.max(0, row.minY - containerRect.top + scrollTop),
-          width,
-          height: Math.max(24, row.maxY - row.minY),
-        });
-      }
+      positions.push({
+        measureIndex: positions.length + 1,
+        x: Math.max(0, left.left - containerRect.left + scrollLeft),
+        y: Math.max(0, systemMinY - containerRect.top + scrollTop),
+        width,
+        height: Math.max(24, systemMaxY - systemMinY),
+      });
     }
   }
 
@@ -131,7 +145,6 @@ function formatTime(milliseconds: number): string {
 export function ScoreViewer({
   fileBytes,
   fileName,
-  annotations,
   activeMeasureIndex,
   onScoreLoaded,
   onMeasureClick,
@@ -212,17 +225,21 @@ export function ScoreViewer({
         scoreRef.current = score;
         const masterBars = score?.masterBars ?? score?.bars ?? [];
         const lookup = api?.renderer?.boundsLookup ?? api?.boundsLookup;
-        let positions = masterBars
-          .map((_: any, index: number) => {
-            const bounds = lookup?.findMasterBarByIndex?.(index) ?? lookup?.getMasterBarBounds?.(index);
-            const box = getBoundsBox(bounds);
-            if (!box) return null;
-            return { ...box, measureIndex: index + 1 };
-          })
-          .filter(Boolean) as MeasurePosition[];
+        let positions: MeasurePosition[] = [];
 
-        if (positions.length === 0 && viewportRef.current) {
+        if (viewportRef.current) {
           positions = extractMeasurePositionsFromDom(viewportRef.current);
+        }
+
+        if (positions.length === 0) {
+          positions = masterBars
+            .map((_: any, index: number) => {
+              const bounds = lookup?.findMasterBarByIndex?.(index) ?? lookup?.getMasterBarBounds?.(index);
+              const box = getBoundsBox(bounds);
+              if (!box) return null;
+              return { ...box, measureIndex: index + 1 };
+            })
+            .filter(Boolean) as MeasurePosition[];
         }
         if (positions.length > 0 || attempt >= 10) {
           setMeasurePositions(positions);
@@ -437,12 +454,11 @@ export function ScoreViewer({
       </div>
       <div ref={viewportRef} className="score-canvas" aria-label="score render area">
         <div ref={hostRef} id="alphaTab" className="score-canvas__host" />
-        <MeasureOverlay
-          annotations={annotations}
-          measurePositions={measurePositions}
-          activeMeasureIndex={activeMeasureIndex}
-          onMeasureClick={(measureIndex) => onMeasureClickRef.current?.(measureIndex)}
-        />
+          <MeasureOverlay
+           measurePositions={measurePositions}
+           activeMeasureIndex={activeMeasureIndex}
+           onMeasureClick={(measureIndex) => onMeasureClickRef.current?.(measureIndex)}
+          />
       </div>
     </section>
   );
