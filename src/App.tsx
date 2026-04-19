@@ -16,7 +16,7 @@ import {
   type ScoreLibraryEntry,
 } from './lib/scoreStorage';
 import { loadAnnotations, saveAnnotations } from './lib/storage';
-import type { Annotation, ScoreDocument, ViewMode } from './types';
+import type { Annotation, ScoreDocument } from './types';
 
 function createId() {
   return crypto.randomUUID();
@@ -46,7 +46,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<ScoreShelfFilter>('all');
   const [message, setMessage] = useState('Choose a Guitar Pro or MusicXML file to begin.');
-  const [viewMode, setViewMode] = useState<ViewMode>('tab');
 
   const sortedAnnotations = useMemo(
     () =>
@@ -65,15 +64,8 @@ export default function App() {
     saveAnnotations(score.fileHash, annotations);
   }, [annotations, score]);
 
-  useEffect(() => {
-    if (!score || !activeEntryId) return;
-
-    setScore((current) => (current && current.viewMode !== viewMode ? { ...current, viewMode } : current));
-    setLibrary((current) => updateScoreLibraryEntry(current, activeEntryId, { viewMode }));
-  }, [score, viewMode, activeEntryId]);
-
   const persistActiveScoreMetadata = (
-    patch: Partial<Pick<ScoreLibraryEntry, 'title' | 'artist' | 'measureCount' | 'fileHash' | 'viewMode'>>
+    patch: Partial<Pick<ScoreLibraryEntry, 'title' | 'artist' | 'measureCount' | 'fileHash'>>
   ) => {
     if (!activeEntryId) return;
     setLibrary((current) => updateScoreLibraryEntry(current, activeEntryId, patch));
@@ -118,7 +110,6 @@ export default function App() {
       setAnnotations(loadAnnotations(resolvedHash));
       setSelectedMeasureIndex(1);
       setMeasureCount(nextEntry.measureCount);
-      setViewMode(nextEntry.viewMode);
       setScore({
         id: createId(),
         filePath: nextEntry.filePath,
@@ -163,7 +154,7 @@ export default function App() {
           filePath,
           fileName: file.name,
           fileHash,
-          viewMode,
+          viewMode: score?.viewMode ?? 'tab',
           measureCount: 0,
         })
       );
@@ -178,7 +169,7 @@ export default function App() {
                 filePath,
                 fileName: file.name,
                 fileHash,
-                viewMode,
+                viewMode: current.viewMode,
               }
             : current
         );
@@ -279,12 +270,6 @@ export default function App() {
         return;
       }
 
-      if (key === 't' && score) {
-        event.preventDefault();
-        setViewMode((current) => (current === 'tab' ? 'standard' : 'tab'));
-        return;
-      }
-
       if (event.shiftKey && key === 'e' && score) {
         event.preventDefault();
         handleExportAnnotations();
@@ -299,7 +284,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [score, viewMode, annotations]);
+  }, [score, annotations]);
 
   const fileLabel = score?.fileName ?? 'No file selected';
 
@@ -392,14 +377,6 @@ export default function App() {
               <button type="button" className="ghost" onClick={handleBackToLibrary}>
                 Back to library
               </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setViewMode((current) => (current === 'tab' ? 'standard' : 'tab'))}
-                aria-label="Toggle score view"
-              >
-                Switch to {viewMode === 'tab' ? 'standard notation' : 'tablature'}
-              </button>
               <button type="button" disabled={!score} onClick={handleExportAnnotations}>
                 Export Notes
               </button>
@@ -414,7 +391,6 @@ export default function App() {
             </div>
             <p className="shortcut-hint">
               Shortcuts: <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>O</kbd> import score,{' '}
-              <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> switch view,{' '}
               <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> export notes,{' '}
               <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> import notes
             </p>
@@ -456,7 +432,6 @@ export default function App() {
                         measureCount: nextMeasureCount,
                         title,
                         artist,
-                        viewMode,
                       }
                     : current
                 );
@@ -464,7 +439,6 @@ export default function App() {
                   measureCount: nextMeasureCount,
                   title,
                   artist,
-                  viewMode,
                 });
                 setMessage([artist, title].filter(Boolean).join(' - ') || `Loaded ${fileLabel}`);
               }}
