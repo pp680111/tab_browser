@@ -1,4 +1,5 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
+const fs = require('node:fs/promises');
 const path = require('path');
 
 const isDev = !app.isPackaged;
@@ -12,6 +13,7 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
 
@@ -37,5 +39,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+ipcMain.handle('score-library:read-file', async (_event, filePath) => {
+  if (typeof filePath !== 'string' || filePath.trim() === '') {
+    throw new Error('Invalid file path.');
+  }
+
+  const data = await fs.readFile(filePath);
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
 });
 

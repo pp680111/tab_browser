@@ -64,30 +64,27 @@ function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosit
   const positions: MeasurePosition[] = [];
 
   for (const child of Array.from(surface.children) as HTMLElement[]) {
-    const childRect = child.getBoundingClientRect();
     const barRects = Array.from(child.querySelectorAll('rect'))
       .map((rect) => ({
-        x: Number(rect.getAttribute('x') ?? Number.NaN),
-        y: Number(rect.getAttribute('y') ?? Number.NaN),
-        width: Number(rect.getAttribute('width') ?? Number.NaN),
-        height: Number(rect.getAttribute('height') ?? Number.NaN),
+        bounds: rect.getBoundingClientRect(),
         fill: rect.getAttribute('fill') ?? '',
       }))
       .filter(
         (rect) =>
           rect.fill === '#222211' &&
-          Number.isFinite(rect.x) &&
-          Number.isFinite(rect.y) &&
-          Number.isFinite(rect.width) &&
-          Number.isFinite(rect.height) &&
-          rect.width <= 5
+          Number.isFinite(rect.bounds.left) &&
+          Number.isFinite(rect.bounds.top) &&
+          Number.isFinite(rect.bounds.width) &&
+          Number.isFinite(rect.bounds.height) &&
+          rect.bounds.width <= 6 &&
+          rect.bounds.height > 0
       );
 
     if (!barRects.length) continue;
 
     const rows = new Map<number, typeof barRects>();
     for (const rect of barRects) {
-      const key = Math.round(rect.y * 2) / 2;
+      const key = Math.round(rect.bounds.top * 2) / 2;
       const next = rows.get(key) ?? [];
       next.push(rect);
       rows.set(key, next);
@@ -95,24 +92,24 @@ function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosit
 
     const sortedRows = Array.from(rows.values())
       .map((row) => {
-        const sorted = row.slice().sort((a, b) => a.x - b.x);
-        const minY = Math.min(...sorted.map((rect) => rect.y));
-        const maxY = Math.max(...sorted.map((rect) => rect.y + rect.height));
+        const sorted = row.slice().sort((a, b) => a.bounds.left - b.bounds.left);
+        const minY = Math.min(...sorted.map((rect) => rect.bounds.top));
+        const maxY = Math.max(...sorted.map((rect) => rect.bounds.bottom));
         return { sorted, minY, maxY };
       })
-      .sort((a, b) => a.minY - b.minY || a.sorted[0].x - b.sorted[0].x);
+      .sort((a, b) => a.minY - b.minY || a.sorted[0].bounds.left - b.sorted[0].bounds.left);
 
     for (const row of sortedRows) {
       for (let index = 0; index < row.sorted.length - 1; index += 1) {
         const left = row.sorted[index];
         const right = row.sorted[index + 1];
-        const width = right.x - left.x;
+        const width = right.bounds.left - left.bounds.left;
         if (!Number.isFinite(width) || width <= 4) continue;
 
         positions.push({
           measureIndex: positions.length + 1,
-          x: Math.max(0, childRect.left - containerRect.left + scrollLeft + left.x),
-          y: Math.max(0, childRect.top - containerRect.top + scrollTop + row.minY),
+          x: Math.max(0, left.bounds.left - containerRect.left + scrollLeft),
+          y: Math.max(0, row.minY - containerRect.top + scrollTop),
           width,
           height: Math.max(24, row.maxY - row.minY),
         });
@@ -207,14 +204,14 @@ export function ScoreViewer({
       });
     };
 
-    const handleRenderFinished = () => {
+      const handleRenderFinished = () => {
       setStatus('ready');
       const syncMeasurePositions = (attempt = 0) => {
         const api = apiRef.current;
         const score = api?.score;
         scoreRef.current = score;
         const masterBars = score?.masterBars ?? score?.bars ?? [];
-        const lookup = api?.boundsLookup;
+        const lookup = api?.renderer?.boundsLookup ?? api?.boundsLookup;
         let positions = masterBars
           .map((_: any, index: number) => {
             const bounds = lookup?.findMasterBarByIndex?.(index) ?? lookup?.getMasterBarBounds?.(index);

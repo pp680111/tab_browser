@@ -2,6 +2,7 @@ export type ViewMode = 'tab' | 'standard';
 
 export interface ScoreDocument {
   id: string;
+  filePath: string | null;
   fileName: string;
   fileHash: string;
   viewMode: ViewMode;

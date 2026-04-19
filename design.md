@@ -11,6 +11,7 @@ GuitarTabs 是一款用于吉他谱记录、浏览、注释与播放的跨平台
 
 ### 1.2 主要目标
 - 统一管理本地 Guitar Pro 乐谱文件。
+- 启动后首先展示已记录的乐谱文件列表，点击条目后再进入阅读界面。
 - 支持六线谱 / 五线谱切换显示。
 - 提供基于小节的内联注释与注释抽屉。
 - 支持基础播放控制与定位跳转。
@@ -38,6 +39,7 @@ GuitarTabs 是一款用于吉他谱记录、浏览、注释与播放的跨平台
 ### 2.2 技术原则
 - 以 AlphaTab 作为谱面渲染核心，避免重复造轮子。
 - Electron 仅承担桌面壳层与文件访问，不承载业务逻辑。
+- 桌面端负责按路径重新读取已导入乐谱，前端负责乐谱库展示与状态切换。
 - 前端状态使用轻量全局状态管理，避免深层 props 传递。
 - 注释数据与谱面文件解耦，便于重命名和迁移。
 
@@ -76,9 +78,26 @@ Electron Shell
 - 桌面模式：通过 Electron 访问本地文件系统，支持更完整的导入/持久化能力。
 - 两种模式共用同一套业务组件，差异仅体现在文件访问与存储层。
 
+### 3.4 启动入口
+- 应用启动默认进入本地乐谱库页，而不是直接进入阅读器。
+- 库页展示已导入乐谱的文件名、路径和最近打开时间。
+- 选择某个条目后才进入乐谱阅读界面。
+
 ## 4. 业务范围
 
-### 4.1 乐谱展示
+### 4.1 乐谱库
+#### 功能点
+- 启动时先展示已记录的乐谱文件列表。
+- 列表项显示文件名、文件路径、最近打开时间和当前注释数量。
+- 点击条目进入乐谱阅读界面。
+- 在阅读界面可一键返回乐谱库。
+
+#### 交互要求
+- 记录的文件路径优先用于重新打开乐谱。
+- 如果路径暂时不可用，可回退到本地缓存的文件内容。
+- 导入新乐谱后应立即写入乐谱库，并可在列表中再次选择。
+
+### 4.2 乐谱展示
 #### 功能点
 - 支持六线谱 / 五线谱切换。
 - 支持缩放显示。
@@ -90,7 +109,7 @@ Electron Shell
 - 缩放只影响视图，不改变数据本身。
 - 跳转后应高亮当前小节，便于用户确认位置。
 
-### 4.2 文件导入
+### 4.3 文件导入
 #### 支持格式
 - `.gp3`
 - `.gp4`
@@ -104,7 +123,8 @@ Electron Shell
 3. 根据文件类型选择解析器：Guitar Pro 或 MusicXML。
 4. AlphaTab 解析并加载谱面。
 5. 计算文件 hash。
-6. 查询并恢复匹配的注释数据。
+6. 写入或更新乐谱库记录。
+7. 查询并恢复匹配的注释数据。
 
 #### 导入规则
 - 同一逻辑文件可通过 hash 识别，而不是只依赖文件名。
@@ -113,13 +133,13 @@ Electron Shell
 - 如不同格式在小节编号或声部结构上存在差异，应在导入适配层完成归一化。
 - MusicXML 能力边界应以 AlphaTab 的实际兼容情况为准，必要时允许局部降级显示。
 
-### 4.3 播放控制
+### 4.4 播放控制
 #### 能力
 - 播放 / 暂停 / 停止。
 - 进度拖动。
 - 播放速度调节：0.25x ~ 2.0x。
 
-### 4.4 注释系统
+### 4.5 注释系统
 #### 功能点
 - 基于小节创建注释。
 - 支持多个注释挂在同一小节。
@@ -137,7 +157,7 @@ Electron Shell
 ```typescript
 interface ScoreDocument {
   id: string;
-  filePath: string;
+  filePath: string | null;
   fileName: string;
   fileHash: string;
   title?: string;
@@ -147,7 +167,23 @@ interface ScoreDocument {
 }
 ```
 
-### 5.2 注释模型
+### 5.2 乐谱库条目
+```typescript
+interface ScoreLibraryEntry {
+  id: string;
+  filePath: string | null;
+  fileName: string;
+  fileHash: string;
+  viewMode: 'tab' | 'standard';
+  measureCount: number;
+  title?: string;
+  artist?: string;
+  createdAt: string;
+  lastOpenedAt: string;
+}
+```
+
+### 5.3 注释模型
 ```typescript
 interface Annotation {
   id: string;
@@ -159,7 +195,7 @@ interface Annotation {
 }
 ```
 
-### 5.3 渲染位置信息
+### 5.4 渲染位置信息
 ```typescript
 interface MeasurePosition {
   measureIndex: number;
@@ -170,10 +206,12 @@ interface MeasurePosition {
 }
 ```
 
-### 5.4 应用状态
+### 5.5 应用状态
 ```typescript
 interface AppState {
+  screen: 'library' | 'reader';
   score: ScoreDocument | null;
+  library: ScoreLibraryEntry[];
   measurePositions: Map<number, MeasurePosition>;
   annotations: Annotation[];
   ui: {
@@ -195,13 +233,14 @@ interface AppState {
 
 ### 6.1 导入与恢复
 ```text
-选择文件 -> 校验格式 -> 解析谱面 -> 计算 hash -> 恢复注释 -> 渲染谱面
+选择文件 -> 校验格式 -> 解析谱面 -> 计算 hash -> 写入乐谱库 -> 恢复注释 -> 渲染谱面
 ```
 
 关键点：
 - hash 作为注释关联主键。
 - 若同名文件内容变化，应视为新的谱面对象。
 - 若 hash 相同但路径变化，应恢复原注释。
+- 启动后选择乐谱库中的条目时，应先尝试按路径读取文件，失败后再从本地缓存恢复。
 
 ### 6.2 小节注释创建
 ```text
@@ -327,6 +366,8 @@ alphaTabRenderer.onRender((result) => {
 ### 10.1 存储策略
 - Web 端：`localStorage` 或 `IndexedDB`，优先考虑更适合扩展的 `IndexedDB`。
 - Electron 端：`electron-store` 或本地 JSON 文件。
+- 乐谱库元数据：存储文件路径、文件名、hash、标题、最近打开时间等信息。
+- 文件内容缓存：用于在路径失效或浏览器环境下重新打开已导入乐谱。
 - 注释与应用配置分离存储，避免互相污染。
 
 ### 10.2 键设计
@@ -343,6 +384,7 @@ alphaTabRenderer.onRender((result) => {
 - 导入文件后先计算 hash。
 - 如果命中已有 hash，自动恢复对应注释。
 - 如果没有命中，创建新的空注释集合。
+- 启动时先恢复乐谱库，再按路径或缓存读取乐谱内容。
 - 如检测到旧版本数据结构，先做迁移再加载。
 
 ## 11. 错误处理与边界情况

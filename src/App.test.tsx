@@ -46,17 +46,26 @@ describe('App integration', () => {
     localStorage.clear();
   });
 
-  it('loads a score, creates annotations, exports and imports bundles', async () => {
+  it('shows the library first, opens a stored score, and preserves annotations', async () => {
     const source = new File(['mock score'], 'mock.gp5', { type: 'application/octet-stream' });
     const sourceHash = await hashFile(source);
+    Object.defineProperty(source, 'path', {
+      value: 'C:\\scores\\mock.gp5',
+    });
 
     render(<App />);
+
+    expect(screen.getByRole('searchbox', { name: 'Search scores' })).toBeInTheDocument();
+    expect(screen.getByText('No scores match the current search or filter.')).toBeInTheDocument();
 
     const scoreInput = document.querySelectorAll('input[type="file"]')[0] as HTMLInputElement;
     fireEvent.change(scoreInput, { target: { files: [source] } });
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Export Notes/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Open mock\.gp5/i })).toBeEnabled());
 
+    fireEvent.click(screen.getByRole('button', { name: /Open mock\.gp5/i }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Load mock score/i })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Load mock score/i }));
     expect(screen.getByText('Score ready: mock.gp5')).toBeInTheDocument();
 

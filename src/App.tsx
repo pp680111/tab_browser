@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnnotationDrawer } from './components/AnnotationDrawer';
+import { ScoreLibrary, type ScoreShelfFilter } from './components/ScoreLibrary';
 import { ScoreViewer } from './components/ScoreViewer';
 import { createAnnotationBundle, parseAnnotationBundle } from './lib/annotationTransfer';
-import { hashFile } from './lib/fileHash';
+import { hashBytes, hashFile } from './lib/fileHash';
 import { isSupportedScoreFile } from './lib/fileTypes';
+import {
+  getScoreLibraryEntryId,
+  loadCachedScoreBytes,
+  loadScoreLibrary,
+  saveCachedScoreBytes,
+  saveScoreLibrary,
+  updateScoreLibraryEntry,
+  upsertScoreLibraryEntry,
+  type ScoreLibraryEntry,
+} from './lib/scoreStorage';
 import { loadAnnotations, saveAnnotations } from './lib/storage';
 import type { Annotation, ScoreDocument, ViewMode } from './types';
 
@@ -23,12 +34,17 @@ function isShortcutTarget(target: EventTarget | null) {
 export default function App() {
   const scoreImportRef = useRef<HTMLInputElement | null>(null);
   const annotationImportRef = useRef<HTMLInputElement | null>(null);
-  const [currentFile, setCurrentFile] = useState<File | null>(null);
+  const [library, setLibrary] = useState<ScoreLibraryEntry[]>(() => loadScoreLibrary());
+  const [screen, setScreen] = useState<'library' | 'reader'>('library');
+  const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
+  const [loadingEntryId, setLoadingEntryId] = useState<string | null>(null);
   const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null);
   const [score, setScore] = useState<ScoreDocument | null>(null);
   const [measureCount, setMeasureCount] = useState(0);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [selectedMeasureIndex, setSelectedMeasureIndex] = useState<number | null>(1);
+  const [selectedMeasureIndex, setSelectedMeasureIndex] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState<ScoreShelfFilter>('all');
   const [message, setMessage] = useState('Choose a Guitar Pro or MusicXML file to begin.');
   const [viewMode, setViewMode] = useState<ViewMode>('tab');
 
@@ -41,14 +57,87 @@ export default function App() {
   );
 
   useEffect(() => {
+    saveScoreLibrary(library);
+  }, [library]);
+
+  useEffect(() => {
     if (!score) return;
     saveAnnotations(score.fileHash, annotations);
   }, [annotations, score]);
 
   useEffect(() => {
-    if (!score) return;
+    if (!score || !activeEntryId) return;
+
     setScore((current) => (current && current.viewMode !== viewMode ? { ...current, viewMode } : current));
-  }, [score, viewMode]);
+    setLibrary((current) => updateScoreLibraryEntry(current, activeEntryId, { viewMode }));
+  }, [score, viewMode, activeEntryId]);
+
+  const persistActiveScoreMetadata = (
+    patch: Partial<Pick<ScoreLibraryEntry, 'title' | 'artist' | 'measureCount' | 'fileHash' | 'viewMode'>>
+  ) => {
+    if (!activeEntryId) return;
+    setLibrary((current) => updateScoreLibraryEntry(current, activeEntryId, patch));
+  };
+
+  const readScoreBytes = async (entry: ScoreLibraryEntry) => {
+    if (entry.filePath && window.guitarTabs?.readFile) {
+      try {
+        const buffer = await window.guitarTabs.readFile(entry.filePath);
+        return new Uint8Array(buffer);
+      } catch {
+        // Fall back to the cached copy when the recorded path is unavailable.
+      }
+    }
+
+    const cached = loadCachedScoreBytes(entry.id);
+    if (cached) return cached;
+
+    throw new Error(
+      entry.filePath
+        ? 'The recorded file path could not be read and no cached copy exists.'
+        : 'No cached copy exists for this score.'
+    );
+  };
+
+  const openEntry = async (entry: ScoreLibraryEntry) => {
+    setLoadingEntryId(entry.id);
+
+    try {
+      const bytes = await readScoreBytes(entry);
+      const resolvedHash = await hashBytes(bytes);
+      const nextEntry = {
+        ...entry,
+        fileHash: resolvedHash,
+        lastOpenedAt: now(),
+      };
+
+      setLibrary((current) => upsertScoreLibraryEntry(current, nextEntry));
+      saveCachedScoreBytes(nextEntry.id, bytes);
+      setActiveEntryId(nextEntry.id);
+      setFileBytes(bytes);
+      setAnnotations(loadAnnotations(resolvedHash));
+      setSelectedMeasureIndex(1);
+      setMeasureCount(nextEntry.measureCount);
+      setViewMode(nextEntry.viewMode);
+      setScore({
+        id: createId(),
+        filePath: nextEntry.filePath,
+        fileName: nextEntry.fileName,
+        fileHash: resolvedHash,
+        viewMode: nextEntry.viewMode,
+        measureCount: nextEntry.measureCount,
+        title: nextEntry.title,
+        artist: nextEntry.artist,
+      });
+      setScreen('reader');
+      setMessage(`Opened ${nextEntry.fileName}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setMessage(`Failed to open ${entry.fileName}: ${message}`);
+    } finally {
+      setLoadingEntryId(null);
+    }
+  };
 
   const handleImport = async (file: File) => {
     if (!isSupportedScoreFile(file.name)) {
@@ -64,21 +153,38 @@ export default function App() {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const fileHash = await hashFile(file);
-      const restored = loadAnnotations(fileHash);
+      const filePath = (file as File & { path?: string }).path ?? null;
+      const id = getScoreLibraryEntryId(filePath, fileHash);
 
-      setCurrentFile(file);
-      setFileBytes(bytes);
-      setAnnotations(restored);
-      setSelectedMeasureIndex(1);
-      setScore({
-        id: createId(),
-        fileName: file.name,
-        fileHash,
-        viewMode,
-        measureCount: 0,
-      });
-      setMeasureCount(0);
-      setMessage(`Loaded ${file.name}. Parsing score...`);
+      saveCachedScoreBytes(id, bytes);
+      setLibrary((current) =>
+        upsertScoreLibraryEntry(current, {
+          id,
+          filePath,
+          fileName: file.name,
+          fileHash,
+          viewMode,
+          measureCount: 0,
+        })
+      );
+
+      if (screen === 'reader' && activeEntryId === id) {
+        setFileBytes(bytes);
+        setAnnotations(loadAnnotations(fileHash));
+        setScore((current) =>
+          current
+            ? {
+                ...current,
+                filePath,
+                fileName: file.name,
+                fileHash,
+                viewMode,
+              }
+            : current
+        );
+      }
+
+      setMessage(`Imported ${file.name}. Click it in your library to open it.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       setMessage(`Failed to load ${file.name}: ${message}`);
@@ -173,19 +279,19 @@ export default function App() {
         return;
       }
 
-      if (key === 't') {
+      if (key === 't' && score) {
         event.preventDefault();
         setViewMode((current) => (current === 'tab' ? 'standard' : 'tab'));
         return;
       }
 
-      if (event.shiftKey && key === 'e') {
+      if (event.shiftKey && key === 'e' && score) {
         event.preventDefault();
         handleExportAnnotations();
         return;
       }
 
-      if (event.shiftKey && key === 'i') {
+      if (event.shiftKey && key === 'i' && score) {
         event.preventDefault();
         annotationImportRef.current?.click();
       }
@@ -195,113 +301,204 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [score, viewMode, annotations]);
 
-  const fileLabel = currentFile?.name ?? 'No file imported';
+  const fileLabel = score?.fileName ?? 'No file selected';
+
+  const handleBackToLibrary = () => {
+    setScreen('library');
+    setActiveEntryId(null);
+    setLoadingEntryId(null);
+    setFileBytes(null);
+    setScore(null);
+    setMeasureCount(0);
+    setAnnotations([]);
+    setSelectedMeasureIndex(null);
+    setMessage('Choose a score from your library.');
+  };
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">GuitarTabs</p>
-          <h1>Score Notes</h1>
-          <p className="subtle" aria-live="polite" role="status">
-            {message}
-          </p>
-        </div>
-        <div className="actions">
-          <label className="file-button">
-            Import Score
-            <input
-              ref={scoreImportRef}
-              type="file"
-              accept=".gp3,.gp4,.gp5,.gtp,.xml,.musicxml"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleImport(file);
-              }}
-            />
-          </label>
+    <main className={`app-shell${screen === 'reader' ? ' app-shell--reader' : ' app-shell--library'}`}>
+      <aside className="app-rail" aria-label="Navigation">
+        <button type="button" className="rail-brand" onClick={() => setScreen('library')}>
+          <span className="rail-brand__logo" aria-hidden="true">
+            GT
+          </span>
+          <span className="rail-brand__text">
+            <strong>GuitarTabs</strong>
+            <span>Local library</span>
+          </span>
+        </button>
+
+        <nav className="rail-nav">
           <button
             type="button"
-            className="ghost"
-            onClick={() => setViewMode((current) => (current === 'tab' ? 'standard' : 'tab'))}
-            aria-label="Toggle score view"
+            className={`rail-link${screen === 'library' ? ' is-active' : ''}`}
+            onClick={() => setScreen('library')}
           >
-            Switch to {viewMode === 'tab' ? 'standard notation' : 'tablature'}
-          </button>
-          <button type="button" disabled={!score} onClick={handleExportAnnotations}>
-            Export Notes
+            <span className="rail-link__icon" aria-hidden="true" />
+            <span>Browse</span>
           </button>
           <button
             type="button"
-            className="ghost"
+            className={`rail-link${screen === 'reader' ? ' is-active' : ''}`}
+            onClick={() => {
+              if (score) setScreen('reader');
+            }}
             disabled={!score}
-            onClick={() => annotationImportRef.current?.click()}
           >
-            Import Notes
+            <span className="rail-link__icon rail-link__icon--book" aria-hidden="true" />
+            <span>Reader</span>
           </button>
-          <input
-            ref={annotationImportRef}
-            type="file"
-            accept=".json,application/json"
-            hidden
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void handleImportAnnotations(file);
-                event.target.value = '';
-              }
+          <button type="button" className="rail-link" onClick={() => setSearchQuery('')}>
+            <span className="rail-link__icon rail-link__icon--spark" aria-hidden="true" />
+            <span>Clear</span>
+          </button>
+          <button type="button" className="rail-link" onClick={() => annotationImportRef.current?.click()}>
+            <span className="rail-link__icon rail-link__icon--note" aria-hidden="true" />
+            <span>Notes</span>
+          </button>
+        </nav>
+
+        <div className="rail-footer">
+          <button type="button" className="rail-action" onClick={() => scoreImportRef.current?.click()}>
+            Import score
+          </button>
+          <p className="rail-footer__hint">{library.length} stored scores</p>
+        </div>
+
+        <input
+          ref={scoreImportRef}
+          type="file"
+          accept=".gp3,.gp4,.gp5,.gtp,.xml,.musicxml"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleImport(file);
+            event.target.value = '';
+          }}
+        />
+      </aside>
+
+      <section className="app-stage">
+        {screen === 'reader' ? (
+          <header className="reader-hero card-surface">
+            <div>
+              <p className="eyebrow">Reader</p>
+              <h1>{score?.title ?? score?.fileName ?? 'Score Notes'}</h1>
+              <p className="subtle" aria-live="polite" role="status">
+                {message}
+              </p>
+            </div>
+            <div className="reader-hero__actions">
+              <button type="button" className="ghost" onClick={handleBackToLibrary}>
+                Back to library
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setViewMode((current) => (current === 'tab' ? 'standard' : 'tab'))}
+                aria-label="Toggle score view"
+              >
+                Switch to {viewMode === 'tab' ? 'standard notation' : 'tablature'}
+              </button>
+              <button type="button" disabled={!score} onClick={handleExportAnnotations}>
+                Export Notes
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={!score}
+                onClick={() => annotationImportRef.current?.click()}
+              >
+                Import Notes
+              </button>
+            </div>
+            <p className="shortcut-hint">
+              Shortcuts: <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>O</kbd> import score,{' '}
+              <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> switch view,{' '}
+              <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> export notes,{' '}
+              <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> import notes
+            </p>
+          </header>
+        ) : null}
+
+        {screen === 'library' ? (
+          <ScoreLibrary
+            entries={library}
+            activeEntryId={activeEntryId}
+            loadingEntryId={loadingEntryId}
+            searchQuery={searchQuery}
+            activeFilter={activeFilter}
+            onSearchQueryChange={setSearchQuery}
+            onFilterChange={setActiveFilter}
+            onOpenEntry={(entry) => {
+              void openEntry(entry);
             }}
           />
-        </div>
-        <p className="shortcut-hint">
-          Shortcuts: <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>O</kbd> import score,{' '}
-          <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> switch view, <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd>{' '}
-          export notes, <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> import notes
-        </p>
-      </header>
+        ) : (
+          <section className="workspace workspace--reader">
+            <ScoreViewer
+              fileBytes={fileBytes}
+              fileName={fileLabel}
+              annotations={sortedAnnotations}
+              activeMeasureIndex={selectedMeasureIndex}
+              onMeasureClick={(measureIndex) => {
+                setSelectedMeasureIndex(measureIndex);
+                setMessage(`Selected measure ${measureIndex}`);
+              }}
+              onPlayerMeasureChange={(measureIndex) => {
+                setSelectedMeasureIndex(measureIndex);
+              }}
+              onScoreLoaded={({ measureCount: nextMeasureCount, title, artist }) => {
+                setMeasureCount(nextMeasureCount);
+                setScore((current) =>
+                  current
+                    ? {
+                        ...current,
+                        measureCount: nextMeasureCount,
+                        title,
+                        artist,
+                        viewMode,
+                      }
+                    : current
+                );
+                persistActiveScoreMetadata({
+                  measureCount: nextMeasureCount,
+                  title,
+                  artist,
+                  viewMode,
+                });
+                setMessage([artist, title].filter(Boolean).join(' - ') || `Loaded ${fileLabel}`);
+              }}
+              onRenderReady={() => {
+                setMessage(`Score ready: ${fileLabel}`);
+              }}
+              onError={(error) => setMessage(`Load failed: ${error}`)}
+            />
 
-      <section className="workspace">
-        <ScoreViewer
-          fileBytes={fileBytes}
-          fileName={fileLabel}
-          annotations={sortedAnnotations}
-          activeMeasureIndex={selectedMeasureIndex}
-          onMeasureClick={(measureIndex) => {
-            setSelectedMeasureIndex(measureIndex);
-            setMessage(`Selected measure ${measureIndex}`);
-          }}
-          onPlayerMeasureChange={(measureIndex) => {
-            setSelectedMeasureIndex(measureIndex);
-          }}
-          onScoreLoaded={({ measureCount: nextMeasureCount, title, artist }) => {
-            setMeasureCount(nextMeasureCount);
-            setScore((current) =>
-              current
-                ? {
-                    ...current,
-                    measureCount: nextMeasureCount,
-                    title,
-                    artist,
-                    viewMode,
-                  }
-                : current
-            );
-            setMessage([artist, title].filter(Boolean).join(' - ') || `Loaded ${fileLabel}`);
-          }}
-          onRenderReady={() => {
-            setMessage(`Score ready: ${fileLabel}`);
-          }}
-          onError={(error) => setMessage(`Load failed: ${error}`)}
-        />
+            <AnnotationDrawer
+              annotations={sortedAnnotations}
+              measureCount={Math.max(measureCount, 1)}
+              selectedMeasureIndex={selectedMeasureIndex}
+              onSelectMeasure={(measureIndex) => setSelectedMeasureIndex(Math.max(1, measureIndex))}
+              onCreate={handleCreateAnnotation}
+              onUpdate={handleUpdateAnnotation}
+              onDelete={handleDeleteAnnotation}
+            />
+          </section>
+        )}
 
-        <AnnotationDrawer
-          annotations={sortedAnnotations}
-          measureCount={Math.max(measureCount, 1)}
-          selectedMeasureIndex={selectedMeasureIndex}
-          onSelectMeasure={(measureIndex) => setSelectedMeasureIndex(Math.max(1, measureIndex))}
-          onCreate={handleCreateAnnotation}
-          onUpdate={handleUpdateAnnotation}
-          onDelete={handleDeleteAnnotation}
+        <input
+          ref={annotationImportRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void handleImportAnnotations(file);
+              event.target.value = '';
+            }
+          }}
         />
       </section>
     </main>
