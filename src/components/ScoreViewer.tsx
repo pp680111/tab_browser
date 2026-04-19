@@ -200,12 +200,57 @@ export function ScoreViewer({
       },
       player: {
         enablePlayer: true,
+        enableCursor: true,
+        enableAnimatedBeatCursor: true,
+        enableElementHighlighting: true,
         soundFont: '/assets/soundfont/sonivox.sf2',
+        scrollElement: viewportRef.current ?? hostRef.current,
       },
       display: {
         scale: 1.0,
       },
     });
+    let playbackCursorLine: HTMLDivElement | null = null;
+    api.customCursorHandler = {
+      onAttach(cursors) {
+        const cursorWrapper = cursors.cursorWrapper.element;
+        playbackCursorLine = document.createElement('div');
+        playbackCursorLine.className = 'playback-cursor-line';
+        cursorWrapper.appendChild(playbackCursorLine);
+        cursors.barCursor.element.style.opacity = '0';
+        cursors.beatCursor.element.style.opacity = '0';
+      },
+      onDetach(cursors) {
+        playbackCursorLine?.remove();
+        playbackCursorLine = null;
+        cursors.barCursor.element.style.opacity = '';
+        cursors.beatCursor.element.style.opacity = '';
+      },
+      placeBarCursor() {
+        // The custom playback line represents the active beat, so the bar cursor stays hidden.
+      },
+      placeBeatCursor(_beatCursor, beatBounds, startBeatX) {
+        if (!playbackCursorLine) return;
+        const barBounds = beatBounds.barBounds.masterBarBounds.visualBounds;
+        const left = Number.isFinite(beatBounds.onNotesX) ? beatBounds.onNotesX : startBeatX;
+        playbackCursorLine.style.left = `${left}px`;
+        playbackCursorLine.style.top = `${barBounds.y}px`;
+        playbackCursorLine.style.height = `${barBounds.h}px`;
+        playbackCursorLine.style.transition = 'left 0ms linear';
+      },
+      transitionBeatCursor(_beatCursor, beatBounds, startBeatX, nextBeatX, duration, _cursorMode) {
+        if (!playbackCursorLine) return;
+        const barBounds = beatBounds.barBounds.masterBarBounds.visualBounds;
+        const left = Number.isFinite(nextBeatX) ? nextBeatX : startBeatX;
+        playbackCursorLine.style.left = `${Number.isFinite(startBeatX) ? startBeatX : left}px`;
+        playbackCursorLine.style.top = `${barBounds.y}px`;
+        playbackCursorLine.style.height = `${barBounds.h}px`;
+        playbackCursorLine.style.transition = `left ${Math.max(0, duration)}ms linear`;
+        window.requestAnimationFrame(() => {
+          playbackCursorLine!.style.left = `${left}px`;
+        });
+      },
+    };
     apiRef.current = api;
     setApiReady(true);
 
