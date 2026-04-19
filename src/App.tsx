@@ -16,7 +16,7 @@ import {
   type ScoreLibraryEntry,
 } from './lib/scoreStorage';
 import { loadAnnotations, saveAnnotations } from './lib/storage';
-import type { Annotation, ScoreDocument } from './types';
+import type { Annotation, ScoreDocument, TrackControlState, TrackSummary } from './types';
 
 function createId() {
   return crypto.randomUUID();
@@ -31,6 +31,14 @@ function isShortcutTarget(target: EventTarget | null) {
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
+function createDefaultTrackControls(trackCount: number): TrackControlState[] {
+  return Array.from({ length: trackCount }, () => ({
+    muted: false,
+    solo: false,
+    volume: 1,
+  }));
+}
+
 export default function App() {
   const scoreImportRef = useRef<HTMLInputElement | null>(null);
   const annotationImportRef = useRef<HTMLInputElement | null>(null);
@@ -41,6 +49,9 @@ export default function App() {
   const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null);
   const [score, setScore] = useState<ScoreDocument | null>(null);
   const [measureCount, setMeasureCount] = useState(0);
+  const [trackSummaries, setTrackSummaries] = useState<TrackSummary[]>([]);
+  const [selectedTrackIndexes, setSelectedTrackIndexes] = useState<number[]>([]);
+  const [trackControls, setTrackControls] = useState<TrackControlState[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [selectedMeasureIndex, setSelectedMeasureIndex] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -109,6 +120,9 @@ export default function App() {
       setFileBytes(bytes);
       setAnnotations(loadAnnotations(resolvedHash));
       setSelectedMeasureIndex(1);
+      setTrackSummaries([]);
+      setSelectedTrackIndexes([]);
+      setTrackControls([]);
       setMeasureCount(nextEntry.measureCount);
       setScore({
         id: createId(),
@@ -295,9 +309,26 @@ export default function App() {
     setFileBytes(null);
     setScore(null);
     setMeasureCount(0);
+    setTrackSummaries([]);
+    setSelectedTrackIndexes([]);
+    setTrackControls([]);
     setAnnotations([]);
     setSelectedMeasureIndex(null);
     setMessage('Choose a score from your library.');
+  };
+
+  const handleSelectAllTracks = () => {
+    setSelectedTrackIndexes([]);
+  };
+
+  const handleSelectSingleTrack = (trackIndex: number) => {
+    setSelectedTrackIndexes([trackIndex]);
+  };
+
+  const updateTrackControl = (trackIndex: number, patch: Partial<TrackControlState>) => {
+    setTrackControls((current) =>
+      current.map((control, index) => (index === trackIndex ? { ...control, ...patch } : control))
+    );
   };
 
   return (
@@ -416,6 +447,8 @@ export default function App() {
               fileBytes={fileBytes}
               fileName={fileLabel}
               activeMeasureIndex={selectedMeasureIndex}
+              selectedTrackIndexes={selectedTrackIndexes}
+              trackControls={trackControls}
               onMeasureClick={(measureIndex) => {
                 setSelectedMeasureIndex(measureIndex);
                 setMessage(`Selected measure ${measureIndex}`);
@@ -423,8 +456,11 @@ export default function App() {
               onPlayerMeasureChange={(measureIndex) => {
                 setSelectedMeasureIndex(measureIndex);
               }}
-              onScoreLoaded={({ measureCount: nextMeasureCount, title, artist }) => {
+              onScoreLoaded={({ measureCount: nextMeasureCount, title, artist, tracks = [] }) => {
                 setMeasureCount(nextMeasureCount);
+                setTrackSummaries(tracks);
+                setTrackControls(createDefaultTrackControls(tracks.length));
+                setSelectedTrackIndexes([]);
                 setScore((current) =>
                   current
                     ? {
@@ -449,6 +485,9 @@ export default function App() {
             />
 
             <AnnotationDrawer
+              tracks={trackSummaries}
+              selectedTrackIndexes={selectedTrackIndexes}
+              trackControls={trackControls}
               annotations={sortedAnnotations}
               measureCount={Math.max(measureCount, 1)}
               selectedMeasureIndex={selectedMeasureIndex}
@@ -456,6 +495,19 @@ export default function App() {
               onSelectMeasure={(measureIndex) =>
                 setSelectedMeasureIndex(Number.isFinite(measureIndex) ? Math.max(1, measureIndex) : 1)
               }
+              onShowAllTracks={handleSelectAllTracks}
+              onSelectTrack={handleSelectSingleTrack}
+              onToggleTrackMute={(trackIndex) => {
+                const nextMuted = !trackControls[trackIndex]?.muted;
+                updateTrackControl(trackIndex, { muted: nextMuted });
+              }}
+              onToggleTrackSolo={(trackIndex) => {
+                const nextSolo = !trackControls[trackIndex]?.solo;
+                updateTrackControl(trackIndex, { solo: nextSolo });
+              }}
+              onChangeTrackVolume={(trackIndex, volume) => {
+                updateTrackControl(trackIndex, { volume });
+              }}
               onCreate={handleCreateAnnotation}
               onUpdate={handleUpdateAnnotation}
               onDelete={handleDeleteAnnotation}

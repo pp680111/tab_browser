@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
-import type { MeasurePosition } from '../types';
+import type { MeasurePosition, TrackControlState, TrackSummary } from '../types';
 import { PlayerControls } from './PlayerControls';
 import { MeasureOverlay } from './MeasureOverlay';
 
@@ -8,7 +8,14 @@ type Props = {
   fileBytes: Uint8Array | null;
   fileName: string | null;
   activeMeasureIndex: number | null;
-  onScoreLoaded: (payload: { title?: string; artist?: string; measureCount: number }) => void;
+  selectedTrackIndexes: number[];
+  trackControls: TrackControlState[];
+  onScoreLoaded: (payload: {
+    title?: string;
+    artist?: string;
+    measureCount: number;
+    tracks: TrackSummary[];
+  }) => void;
   onMeasureClick?: (measureIndex: number) => void;
   onPlayerMeasureChange?: (measureIndex: number) => void;
   onRenderReady?: () => void;
@@ -29,6 +36,18 @@ function extractTitle(score: any): { title?: string; artist?: string } {
   const title = score?.title ?? score?.song?.title ?? score?.name;
   const artist = score?.artist ?? score?.song?.artist?.name ?? score?.track?.artist;
   return { title, artist };
+}
+
+function extractTrackSummaries(score: any): TrackSummary[] {
+  const tracks = Array.isArray(score?.tracks) ? score.tracks : [];
+  return tracks.map((track: any, index: number) => ({
+    index,
+    name: String(track?.name ?? `Track ${index + 1}`),
+    shortName: String(track?.shortName ?? track?.name ?? `T${index + 1}`),
+    isPercussion: Boolean(track?.isPercussion),
+    isVisibleOnMultiTrack: track?.isVisibleOnMultiTrack !== false,
+    staffCount: Array.isArray(track?.staves) ? track.staves.length : 0,
+  }));
 }
 
 function getBoundsBox(bounds: any): MeasurePosition | null {
@@ -146,6 +165,8 @@ export function ScoreViewer({
   fileBytes,
   fileName,
   activeMeasureIndex,
+  selectedTrackIndexes,
+  trackControls,
   onScoreLoaded,
   onMeasureClick,
   onPlayerMeasureChange,
@@ -156,6 +177,7 @@ export function ScoreViewer({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const apiRef = useRef<any>(null);
   const scoreRef = useRef<any>(null);
+  const lastRenderedTrackKeyRef = useRef('');
   const onScoreLoadedRef = useRef(onScoreLoaded);
   const onMeasureClickRef = useRef(onMeasureClick);
   const onRenderReadyRef = useRef(onRenderReady);
@@ -167,6 +189,7 @@ export function ScoreViewer({
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [positionLabel, setPositionLabel] = useState('Stopped');
   const [playerReady, setPlayerReady] = useState(false);
+  const [scoreRevision, setScoreRevision] = useState(0);
   const [loopRange, setLoopRange] = useState<{ startMeasure: number | null; endMeasure: number | null }>({
     startMeasure: null,
     endMeasure: null,
@@ -256,15 +279,19 @@ export function ScoreViewer({
 
     const handleScoreLoaded = (score: any) => {
       scoreRef.current = score;
+      lastRenderedTrackKeyRef.current = '';
       const meta = extractTitle(score);
       onScoreLoadedRef.current({
         ...meta,
         measureCount: extractMeasureCount(score),
+        tracks: extractTrackSummaries(score),
       });
+      setScoreRevision((current) => current + 1);
     };
 
-      const handleRenderFinished = () => {
+    const handleRenderFinished = () => {
       setStatus('ready');
+      setScoreRevision((current) => current + 1);
       const syncMeasurePositions = (attempt = 0) => {
         const api = apiRef.current;
         const score = api?.score;
@@ -379,6 +406,44 @@ export function ScoreViewer({
       onErrorRef.current?.('AlphaTab could not load the current file.');
     }
   }, [apiReady, fileBytes]);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    const score = scoreRef.current;
+    if (!api || !score) return;
+
+    const allTracks = Array.isArray(score.tracks) ? score.tracks : [];
+    if (allTracks.length === 0) return;
+
+    const nextTrackIndexes =
+      selectedTrackIndexes.length > 0 ? selectedTrackIndexes : allTracks.map((track: any, index: number) => track?.index ?? index);
+    const trackKey = nextTrackIndexes.join(',');
+    if (lastRenderedTrackKeyRef.current === trackKey) return;
+    const nextTracks = nextTrackIndexes.map((trackIndex) => allTracks[trackIndex]).filter(Boolean);
+
+    if (nextTracks.length > 0) {
+      api.renderTracks?.(nextTracks);
+      lastRenderedTrackKeyRef.current = trackKey;
+    }
+  }, [selectedTrackIndexes, trackControls]);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    const score = scoreRef.current;
+    if (!api || !score) return;
+
+    const allTracks = Array.isArray(score.tracks) ? score.tracks : [];
+    if (allTracks.length === 0) return;
+
+    allTracks.forEach((track: any, index: number) => {
+      const control = trackControls[index];
+      if (!control) return;
+
+      api.changeTrackMute?.([track], control.muted);
+      api.changeTrackSolo?.([track], control.solo);
+      api.changeTrackVolume?.([track], control.volume);
+    });
+  }, [scoreRevision, trackControls]);
 
   useEffect(() => {
     const api = apiRef.current;

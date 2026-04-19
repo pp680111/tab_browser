@@ -19,6 +19,21 @@ export interface MeasurePosition {
   height: number;
 }
 
+export interface TrackSummary {
+  index: number;
+  name: string;
+  shortName: string;
+  isPercussion: boolean;
+  isVisibleOnMultiTrack: boolean;
+  staffCount: number;
+}
+
+export interface TrackControlState {
+  muted: boolean;
+  solo: boolean;
+  volume: number;
+}
+
 export interface Annotation {
   id: string;
   scoreHash: string;

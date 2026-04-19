@@ -1015,6 +1015,141 @@ button:disabled:hover {
   border-bottom: 1px solid var(--outline);
 }
 
+.drawer-tracks {
+  display: grid;
+  gap: 12px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--outline);
+  background: linear-gradient(180deg, rgba(247, 249, 254, 0.92), rgba(255, 255, 255, 0.94));
+}
+
+.drawer-tracks__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+}
+
+.drawer-tracks__header h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.track-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.track-tab {
+  min-height: 36px;
+  border-radius: 999px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--outline);
+  background: var(--surface);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-1);
+}
+
+.track-tab.is-active {
+  background: var(--primary-container);
+  color: var(--primary-strong);
+  border-color: rgba(36, 87, 214, 0.28);
+}
+
+.track-tab__index {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.track-tab__name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.track-list {
+  display: grid;
+  gap: 10px;
+}
+
+.track-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--outline);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-1);
+}
+
+.track-card.is-selected {
+  border-color: rgba(36, 87, 214, 0.28);
+  box-shadow: var(--shadow-2);
+}
+
+.track-card__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.track-card__meta strong {
+  display: block;
+  font-size: 15px;
+}
+
+.track-card__meta p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.track-card__meta span {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.track-card__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.track-card__actions button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.track-card__volume {
+  display: grid;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.track-card__volume span {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.track-card__volume strong {
+  color: var(--text);
+}
+
+.track-card__volume input[type='range'] {
+  width: 100%;
+  accent-color: var(--primary);
+}
+
 .drawer-create label {
   display: grid;
   gap: 8px;
