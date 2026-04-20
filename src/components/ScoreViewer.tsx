@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
 import type { MeasurePosition, TrackControlState, TrackSummary } from '../types';
 import { PlayerControls } from './PlayerControls';
-import { MeasureOverlay } from './MeasureOverlay';
 
 type Props = {
   fileBytes: Uint8Array | null;
@@ -72,85 +71,17 @@ function getBoundsBox(bounds: any): MeasurePosition | null {
   };
 }
 
-function clusterBarRectsByX(
-  rects: Array<{ bounds: DOMRect; fill: string }>
-): Array<{ rects: Array<{ bounds: DOMRect; fill: string }>; left: number }> {
-  const clusters: Array<{ rects: Array<{ bounds: DOMRect; fill: string }>; left: number; right: number }> = [];
+function collectMeasurePositions(api: any, score: any): MeasurePosition[] {
+  const lookup = api?.renderer?.boundsLookup ?? api?.boundsLookup;
+  const masterBars = Array.isArray(score?.masterBars) ? score.masterBars : [];
 
-  for (const rect of rects.slice().sort((a, b) => a.bounds.left - b.bounds.left || a.bounds.top - b.bounds.top)) {
-    const cluster = clusters.at(-1);
-    if (!cluster || rect.bounds.left - cluster.right > 4) {
-      clusters.push({
-        rects: [rect],
-        left: rect.bounds.left,
-        right: rect.bounds.right,
-      });
-      continue;
-    }
-
-    cluster.rects.push(rect);
-    cluster.left = Math.min(cluster.left, rect.bounds.left);
-    cluster.right = Math.max(cluster.right, rect.bounds.right);
-  }
-
-  return clusters
-    .filter((cluster) => cluster.rects.length > 1)
-    .map((cluster) => ({
-      rects: cluster.rects,
-      left: cluster.left,
-    }));
-}
-
-function extractMeasurePositionsFromDom(container: HTMLDivElement): MeasurePosition[] {
-  const surface = container.querySelector('.at-surface') as HTMLElement | null;
-  if (!surface) return [];
-
-  const containerRect = container.getBoundingClientRect();
-  const scrollLeft = container.scrollLeft;
-  const scrollTop = container.scrollTop;
-  const positions: MeasurePosition[] = [];
-
-  for (const child of Array.from(surface.children) as HTMLElement[]) {
-    const barRects = Array.from(child.querySelectorAll('rect'))
-      .map((rect) => ({
-        bounds: rect.getBoundingClientRect(),
-        fill: rect.getAttribute('fill') ?? '',
-      }))
-      .filter(
-        (rect) =>
-          rect.fill === '#222211' &&
-          Number.isFinite(rect.bounds.left) &&
-          Number.isFinite(rect.bounds.top) &&
-          Number.isFinite(rect.bounds.width) &&
-          Number.isFinite(rect.bounds.height) &&
-          rect.bounds.width <= 3 &&
-          rect.bounds.height > 0
-      );
-
-    if (!barRects.length) continue;
-    const clusters = clusterBarRectsByX(barRects);
-    if (clusters.length < 2) continue;
-
-    const systemMinY = Math.min(...barRects.map((rect) => rect.bounds.top));
-    const systemMaxY = Math.max(...barRects.map((rect) => rect.bounds.bottom));
-
-    for (let index = 0; index < clusters.length - 1; index += 1) {
-      const left = clusters[index];
-      const right = clusters[index + 1];
-      const width = right.left - left.left;
-      if (!Number.isFinite(width) || width <= 4) continue;
-
-      positions.push({
-        measureIndex: positions.length + 1,
-        x: Math.max(0, left.left - containerRect.left + scrollLeft),
-        y: Math.max(0, systemMinY - containerRect.top + scrollTop),
-        width,
-        height: Math.max(24, systemMaxY - systemMinY),
-      });
-    }
-  }
-
-  return positions;
+  return masterBars
+    .map((_: unknown, index: number) => {
+      const bounds = lookup?.findMasterBarByIndex?.(index) ?? lookup?.getMasterBarBounds?.(index);
+      const box = getBoundsBox(bounds);
+      return box ? { ...box, measureIndex: index + 1 } : null;
+    })
+    .filter(Boolean) as MeasurePosition[];
 }
 
 function formatTime(milliseconds: number): string {
@@ -178,18 +109,19 @@ export function ScoreViewer({
   const apiRef = useRef<any>(null);
   const scoreRef = useRef<any>(null);
   const lastRenderedTrackKeyRef = useRef('');
+  const trackRenderPendingRef = useRef(false);
   const onScoreLoadedRef = useRef(onScoreLoaded);
   const onMeasureClickRef = useRef(onMeasureClick);
   const onRenderReadyRef = useRef(onRenderReady);
   const onErrorRef = useRef(onError);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
   const [apiReady, setApiReady] = useState(false);
-  const [measurePositions, setMeasurePositions] = useState<MeasurePosition[]>([]);
   const [playing, setPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [positionLabel, setPositionLabel] = useState('Stopped');
   const [playerReady, setPlayerReady] = useState(false);
   const [scoreRevision, setScoreRevision] = useState(0);
+  const [measurePositions, setMeasurePositions] = useState<MeasurePosition[]>([]);
   const [loopRange, setLoopRange] = useState<{ startMeasure: number | null; endMeasure: number | null }>({
     startMeasure: null,
     endMeasure: null,
@@ -254,7 +186,8 @@ export function ScoreViewer({
       },
       placeBeatCursor(_beatCursor, beatBounds, startBeatX) {
         if (!playbackCursorLine) return;
-        const barBounds = beatBounds.barBounds.masterBarBounds.visualBounds;
+        const barBounds = beatBounds?.barBounds?.masterBarBounds?.visualBounds;
+        if (!barBounds) return;
         const left = Number.isFinite(beatBounds.onNotesX) ? beatBounds.onNotesX : startBeatX;
         playbackCursorLine.style.left = `${left}px`;
         playbackCursorLine.style.top = `${barBounds.y}px`;
@@ -263,14 +196,17 @@ export function ScoreViewer({
       },
       transitionBeatCursor(_beatCursor, beatBounds, startBeatX, nextBeatX, duration, _cursorMode) {
         if (!playbackCursorLine) return;
-        const barBounds = beatBounds.barBounds.masterBarBounds.visualBounds;
+        const barBounds = beatBounds?.barBounds?.masterBarBounds?.visualBounds;
+        if (!barBounds) return;
         const left = Number.isFinite(nextBeatX) ? nextBeatX : startBeatX;
         playbackCursorLine.style.left = `${Number.isFinite(startBeatX) ? startBeatX : left}px`;
         playbackCursorLine.style.top = `${barBounds.y}px`;
         playbackCursorLine.style.height = `${barBounds.h}px`;
         playbackCursorLine.style.transition = `left ${Math.max(0, duration)}ms linear`;
         window.requestAnimationFrame(() => {
-          playbackCursorLine!.style.left = `${left}px`;
+          if (playbackCursorLine) {
+            playbackCursorLine.style.left = `${left}px`;
+          }
         });
       },
     };
@@ -280,6 +216,8 @@ export function ScoreViewer({
     const handleScoreLoaded = (score: any) => {
       scoreRef.current = score;
       lastRenderedTrackKeyRef.current = '';
+      trackRenderPendingRef.current = true;
+      setMeasurePositions([]);
       const meta = extractTitle(score);
       onScoreLoadedRef.current({
         ...meta,
@@ -290,40 +228,15 @@ export function ScoreViewer({
     };
 
     const handleRenderFinished = () => {
+      trackRenderPendingRef.current = false;
+      const api = apiRef.current;
+      const score = scoreRef.current;
+      if (api && score) {
+        setMeasurePositions(collectMeasurePositions(api, score));
+      }
       setStatus('ready');
       setScoreRevision((current) => current + 1);
-      const syncMeasurePositions = (attempt = 0) => {
-        const api = apiRef.current;
-        const score = api?.score;
-        scoreRef.current = score;
-        const masterBars = score?.masterBars ?? score?.bars ?? [];
-        const lookup = api?.renderer?.boundsLookup ?? api?.boundsLookup;
-        let positions: MeasurePosition[] = [];
-
-        if (viewportRef.current) {
-          positions = extractMeasurePositionsFromDom(viewportRef.current);
-        }
-
-        if (positions.length === 0) {
-          positions = masterBars
-            .map((_: any, index: number) => {
-              const bounds = lookup?.findMasterBarByIndex?.(index) ?? lookup?.getMasterBarBounds?.(index);
-              const box = getBoundsBox(bounds);
-              if (!box) return null;
-              return { ...box, measureIndex: index + 1 };
-            })
-            .filter(Boolean) as MeasurePosition[];
-        }
-        if (positions.length > 0 || attempt >= 10) {
-          setMeasurePositions(positions);
-          onRenderReadyRef.current?.();
-          return;
-        }
-
-        window.setTimeout(() => syncMeasurePositions(attempt + 1), 100);
-      };
-
-      window.setTimeout(() => syncMeasurePositions(), 0);
+      onRenderReadyRef.current?.();
     };
 
     const handlePlayerReady = () => {
@@ -367,7 +280,7 @@ export function ScoreViewer({
       onErrorRef.current?.(error.message);
     };
 
-    const handleBeatMouseDown = (beat: any) => {
+  const handleBeatMouseDown = (beat: any) => {
       const measureIndex = typeof beat?.bar?.index === 'number' ? beat.bar.index + 1 : null;
       if (measureIndex && onMeasureClickRef.current) {
         onMeasureClickRef.current(measureIndex);
@@ -381,7 +294,7 @@ export function ScoreViewer({
     api.playerPositionChanged?.on?.(handlePlayerPositionChanged);
     api.playedBeatChanged?.on?.(handlePlayedBeatChanged);
     api.error.on(handleError);
-    api.beatMouseUp?.on?.(handleBeatMouseDown);
+    api.beatMouseDown?.on?.(handleBeatMouseDown);
 
     return () => {
       api.scoreLoaded.off(handleScoreLoaded);
@@ -391,7 +304,7 @@ export function ScoreViewer({
       api.playerPositionChanged?.off?.(handlePlayerPositionChanged);
       api.playedBeatChanged?.off?.(handlePlayedBeatChanged);
       api.error.off(handleError);
-      api.beatMouseUp?.off?.(handleBeatMouseDown);
+      api.beatMouseDown?.off?.(handleBeatMouseDown);
       api.destroy?.();
       apiRef.current = null;
     };
@@ -422,6 +335,8 @@ export function ScoreViewer({
     const nextTracks = nextTrackIndexes.map((trackIndex) => allTracks[trackIndex]).filter(Boolean);
 
     if (nextTracks.length > 0) {
+      trackRenderPendingRef.current = true;
+      setMeasurePositions([]);
       api.renderTracks?.(nextTracks);
       lastRenderedTrackKeyRef.current = trackKey;
     }
@@ -472,8 +387,9 @@ export function ScoreViewer({
 
   useEffect(() => {
     if (!activeMeasureIndex) return;
-    const position = measurePositions.find((item) => item.measureIndex === activeMeasureIndex);
+    if (trackRenderPendingRef.current) return;
     const container = viewportRef.current;
+    const position = measurePositions.find((item) => item.measureIndex === activeMeasureIndex);
     if (!position || !container) return;
 
     const top = Math.max(0, position.y - 120);
@@ -565,11 +481,6 @@ export function ScoreViewer({
       </div>
       <div ref={viewportRef} className="score-canvas" aria-label="score render area">
         <div ref={hostRef} id="alphaTab" className="score-canvas__host" />
-          <MeasureOverlay
-           measurePositions={measurePositions}
-           activeMeasureIndex={activeMeasureIndex}
-           onMeasureClick={(measureIndex) => onMeasureClickRef.current?.(measureIndex)}
-          />
       </div>
     </section>
   );

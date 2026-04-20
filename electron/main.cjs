@@ -19,7 +19,9 @@ function createWindow() {
 
   if (isDev) {
     win.loadURL('http://127.0.0.1:3000');
-    win.webContents.openDevTools({ mode: 'detach' });
+    if (process.env.OPEN_DEVTOOLS === '1') {
+      win.webContents.openDevTools({ mode: 'detach' });
+    }
   } else {
     win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
