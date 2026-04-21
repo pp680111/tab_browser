@@ -15,6 +15,7 @@ import {
   upsertScoreLibraryEntry,
   type ScoreLibraryEntry,
 } from './lib/scoreStorage';
+import { getFileExtension } from './lib/fileTypes';
 import { loadAnnotations, saveAnnotations } from './lib/storage';
 import type { Annotation, ScoreDocument, TrackControlState, TrackSummary } from './types';
 
@@ -39,6 +40,11 @@ function createDefaultTrackControls(trackCount: number): TrackControlState[] {
   }));
 }
 
+function getDefaultTrackSelection(fileName: string | null) {
+  const extension = getFileExtension(fileName ?? '');
+  return ['gp3', 'gp4', 'gp5', 'gtp'].includes(extension) ? [0] : [];
+}
+
 export default function App() {
   const scoreImportRef = useRef<HTMLInputElement | null>(null);
   const annotationImportRef = useRef<HTMLInputElement | null>(null);
@@ -54,9 +60,15 @@ export default function App() {
   const [trackControls, setTrackControls] = useState<TrackControlState[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [selectedMeasureIndex, setSelectedMeasureIndex] = useState<number | null>(null);
+  const [playbackMeasureIndex, setPlaybackMeasureIndex] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<ScoreShelfFilter>('all');
   const [message, setMessage] = useState('Choose a Guitar Pro or MusicXML file to begin.');
+
+  const currentMeasureIndex = isPlaying
+    ? playbackMeasureIndex ?? selectedMeasureIndex ?? 1
+    : selectedMeasureIndex ?? playbackMeasureIndex ?? 1;
 
   const sortedAnnotations = useMemo(
     () =>
@@ -120,10 +132,12 @@ export default function App() {
       setFileBytes(bytes);
       setAnnotations(loadAnnotations(resolvedHash));
       setSelectedMeasureIndex(1);
+      setPlaybackMeasureIndex(null);
+      setIsPlaying(false);
       setTrackSummaries([]);
-      setSelectedTrackIndexes([]);
       setTrackControls([]);
       setMeasureCount(nextEntry.measureCount);
+      setSelectedTrackIndexes(getDefaultTrackSelection(nextEntry.fileName));
       setScore({
         id: createId(),
         filePath: nextEntry.filePath,
@@ -182,11 +196,12 @@ export default function App() {
                 ...current,
                 filePath,
                 fileName: file.name,
-                fileHash,
-                viewMode: current.viewMode,
-              }
+              fileHash,
+              viewMode: current.viewMode,
+            }
             : current
         );
+        setSelectedTrackIndexes(getDefaultTrackSelection(file.name));
       }
 
       setMessage(`Imported ${file.name}. Click it in your library to open it.`);
@@ -314,6 +329,8 @@ export default function App() {
     setTrackControls([]);
     setAnnotations([]);
     setSelectedMeasureIndex(null);
+    setPlaybackMeasureIndex(null);
+    setIsPlaying(false);
     setMessage('Choose a score from your library.');
   };
 
@@ -468,13 +485,21 @@ export default function App() {
                 setMessage(`Selected measure ${measureIndex}`);
               }}
               onPlayerMeasureChange={(measureIndex) => {
-                setSelectedMeasureIndex(measureIndex);
+                setPlaybackMeasureIndex(measureIndex);
               }}
-              onScoreLoaded={({ measureCount: nextMeasureCount, title, artist, tracks = [] }) => {
+              onPlaybackStateChange={(playing) => {
+                setIsPlaying(playing);
+                if (!playing) {
+                  setPlaybackMeasureIndex(null);
+                }
+              }}
+              onScoreLoaded={({ fileName: loadedFileName, measureCount: nextMeasureCount, title, artist, tracks = [] }) => {
                 setMeasureCount(nextMeasureCount);
                 setTrackSummaries(tracks);
                 setTrackControls(createDefaultTrackControls(tracks.length));
-                setSelectedTrackIndexes([]);
+                setSelectedTrackIndexes((current) =>
+                  current.length > 0 ? current : getDefaultTrackSelection(loadedFileName)
+                );
                 setScore((current) =>
                   current
                     ? {
@@ -501,8 +526,8 @@ export default function App() {
             <AnnotationDrawer
               annotations={sortedAnnotations}
               measureCount={Math.max(measureCount, 1)}
-              selectedMeasureIndex={selectedMeasureIndex}
-              activeMeasureIndex={selectedMeasureIndex}
+              selectedMeasureIndex={currentMeasureIndex}
+              activeMeasureIndex={currentMeasureIndex}
               onSelectMeasure={(measureIndex) =>
                 setSelectedMeasureIndex(Number.isFinite(measureIndex) ? Math.max(1, measureIndex) : 1)
               }

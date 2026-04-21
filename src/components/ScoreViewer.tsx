@@ -16,6 +16,7 @@ type Props = {
   onToggleTrackSolo: (trackIndex: number) => void;
   onChangeTrackVolume: (trackIndex: number, volume: number) => void;
   onScoreLoaded: (payload: {
+    fileName: string;
     title?: string;
     artist?: string;
     measureCount: number;
@@ -23,6 +24,7 @@ type Props = {
   }) => void;
   onMeasureClick?: (measureIndex: number) => void;
   onPlayerMeasureChange?: (measureIndex: number) => void;
+  onPlaybackStateChange?: (playing: boolean) => void;
   onRenderReady?: () => void;
   onError?: (message: string) => void;
 };
@@ -113,6 +115,7 @@ export function ScoreViewer({
   onScoreLoaded,
   onMeasureClick,
   onPlayerMeasureChange,
+  onPlaybackStateChange,
   onRenderReady,
   onError,
 }: Props) {
@@ -232,6 +235,7 @@ export function ScoreViewer({
       setMeasurePositions([]);
       const meta = extractTitle(score);
       onScoreLoadedRef.current({
+        fileName: label,
         ...meta,
         measureCount: extractMeasureCount(score),
         tracks: extractTrackSummaries(score),
@@ -259,6 +263,7 @@ export function ScoreViewer({
     const handlePlayerStateChanged = (state: any) => {
       const isPlaying = Boolean(state?.state === alphaTab.synth.PlayerState.Playing);
       setPlaying(isPlaying);
+      onPlaybackStateChange?.(isPlaying);
       if (typeof state?.playbackSpeed === 'number') {
         setPlaybackSpeed(state.playbackSpeed);
       }
@@ -420,6 +425,7 @@ export function ScoreViewer({
   const handleStop = () => {
     apiRef.current?.stop?.();
     setPlaying(false);
+    onPlaybackStateChange?.(false);
     setPositionLabel('Stopped');
   };
 
