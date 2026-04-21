@@ -431,6 +431,7 @@ button:disabled:hover {
 .workspace--reader > .drawer {
   position: sticky;
   top: 20px;
+  height: calc(100vh - 40px);
   max-height: calc(100vh - 40px);
 }
 
@@ -815,6 +816,27 @@ button:disabled:hover {
   flex-wrap: wrap;
 }
 
+.player-controls__tracks {
+  width: 100%;
+  display: grid;
+  gap: 12px;
+}
+
+.player-controls__tracks-toggle {
+  align-self: start;
+  width: fit-content;
+}
+
+.player-controls__tracks-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--outline);
+  background: linear-gradient(180deg, rgba(247, 249, 254, 0.96), rgba(255, 255, 255, 0.98));
+  box-shadow: var(--shadow-1);
+}
+
 .player-controls__label {
   color: var(--text-muted);
   font-size: 13px;
@@ -1150,12 +1172,17 @@ button:disabled:hover {
 .annotation-list {
   display: grid;
   gap: 14px;
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-content: start;
+  justify-items: stretch;
+  grid-auto-rows: min-content;
 }
 
 .annotation-card {
+  align-self: start;
   border: 1px solid var(--outline);
   border-radius: 22px;
   padding: 16px;

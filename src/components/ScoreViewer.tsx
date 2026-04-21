@@ -7,8 +7,14 @@ type Props = {
   fileBytes: Uint8Array | null;
   fileName: string | null;
   activeMeasureIndex: number | null;
+  tracks: TrackSummary[];
   selectedTrackIndexes: number[];
   trackControls: TrackControlState[];
+  onShowAllTracks: () => void;
+  onSelectTrack: (trackIndex: number) => void;
+  onToggleTrackMute: (trackIndex: number) => void;
+  onToggleTrackSolo: (trackIndex: number) => void;
+  onChangeTrackVolume: (trackIndex: number, volume: number) => void;
   onScoreLoaded: (payload: {
     title?: string;
     artist?: string;
@@ -96,8 +102,14 @@ export function ScoreViewer({
   fileBytes,
   fileName,
   activeMeasureIndex,
+  tracks,
   selectedTrackIndexes,
   trackControls,
+  onShowAllTracks,
+  onSelectTrack,
+  onToggleTrackMute,
+  onToggleTrackSolo,
+  onChangeTrackVolume,
   onScoreLoaded,
   onMeasureClick,
   onPlayerMeasureChange,
@@ -471,12 +483,20 @@ export function ScoreViewer({
           playbackSpeed={playbackSpeed}
           positionLabel={positionLabel}
           loopLabel={loopLabel}
+          tracks={tracks}
+          selectedTrackIndexes={selectedTrackIndexes}
+          trackControls={trackControls}
           onPlayPause={handlePlayPause}
           onStop={handleStop}
           onSpeedChange={handleSpeedChange}
           onSetLoopStart={handleSetLoopStart}
           onSetLoopEnd={handleSetLoopEnd}
           onClearLoop={handleClearLoop}
+          onShowAllTracks={onShowAllTracks}
+          onSelectTrack={onSelectTrack}
+          onToggleTrackMute={onToggleTrackMute}
+          onToggleTrackSolo={onToggleTrackSolo}
+          onChangeTrackVolume={onChangeTrackVolume}
         />
       </div>
       <div ref={viewportRef} className="score-canvas" aria-label="score render area">

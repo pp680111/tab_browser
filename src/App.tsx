@@ -447,8 +447,22 @@ export default function App() {
               fileBytes={fileBytes}
               fileName={fileLabel}
               activeMeasureIndex={selectedMeasureIndex}
+              tracks={trackSummaries}
               selectedTrackIndexes={selectedTrackIndexes}
               trackControls={trackControls}
+              onShowAllTracks={handleSelectAllTracks}
+              onSelectTrack={handleSelectSingleTrack}
+              onToggleTrackMute={(trackIndex) => {
+                const nextMuted = !trackControls[trackIndex]?.muted;
+                updateTrackControl(trackIndex, { muted: nextMuted });
+              }}
+              onToggleTrackSolo={(trackIndex) => {
+                const nextSolo = !trackControls[trackIndex]?.solo;
+                updateTrackControl(trackIndex, { solo: nextSolo });
+              }}
+              onChangeTrackVolume={(trackIndex, volume) => {
+                updateTrackControl(trackIndex, { volume });
+              }}
               onMeasureClick={(measureIndex) => {
                 setSelectedMeasureIndex(measureIndex);
                 setMessage(`Selected measure ${measureIndex}`);
@@ -485,9 +499,6 @@ export default function App() {
             />
 
             <AnnotationDrawer
-              tracks={trackSummaries}
-              selectedTrackIndexes={selectedTrackIndexes}
-              trackControls={trackControls}
               annotations={sortedAnnotations}
               measureCount={Math.max(measureCount, 1)}
               selectedMeasureIndex={selectedMeasureIndex}
@@ -495,19 +506,6 @@ export default function App() {
               onSelectMeasure={(measureIndex) =>
                 setSelectedMeasureIndex(Number.isFinite(measureIndex) ? Math.max(1, measureIndex) : 1)
               }
-              onShowAllTracks={handleSelectAllTracks}
-              onSelectTrack={handleSelectSingleTrack}
-              onToggleTrackMute={(trackIndex) => {
-                const nextMuted = !trackControls[trackIndex]?.muted;
-                updateTrackControl(trackIndex, { muted: nextMuted });
-              }}
-              onToggleTrackSolo={(trackIndex) => {
-                const nextSolo = !trackControls[trackIndex]?.solo;
-                updateTrackControl(trackIndex, { solo: nextSolo });
-              }}
-              onChangeTrackVolume={(trackIndex, volume) => {
-                updateTrackControl(trackIndex, { volume });
-              }}
               onCreate={handleCreateAnnotation}
               onUpdate={handleUpdateAnnotation}
               onDelete={handleDeleteAnnotation}
